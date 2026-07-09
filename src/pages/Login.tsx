@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useLoginMutation } from '../api/apiSlice';
 import { saveToken } from '../utils/token';
 import { getSocket } from '../utils/socket';
-import { useToast } from '../hooks/useToast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -16,7 +15,13 @@ const Login: React.FC = () => {
 
     const [login, { isLoading }] = useLoginMutation();
     const navigate = useNavigate();
-    const { info } = useToast();
+    const [searchParams] = useSearchParams();
+    const oauthError = searchParams.get('oauth_error');
+
+    const handleYandexLogin = () => {
+        const backendBase = (import.meta.env.VITE_API_URL || 'http://localhost:3001/api').replace(/\/api$/, '');
+        window.location.href = `${backendBase}/api/auth/yandex`;
+    };
 
     const validateForm = () => {
         const newErrors: { email?: string; password?: string; general?: string } = {};
@@ -59,10 +64,6 @@ const Login: React.FC = () => {
         }
     };
 
-    const handleOAuthLogin = (provider: 'vk' | 'yandex') => {
-        info(`Вход через ${provider === 'vk' ? 'ВКонтакте' : 'Яндекс'} будет добавлен позже.`);
-    };
-
     return (
         <div className="flex min-h-screen items-center justify-center bg-muted/40 p-4 overflow-y-auto">
             <div className="w-full max-w-sm rounded-lg border bg-card p-4 sm:p-6 shadow-sm my-auto">
@@ -74,6 +75,12 @@ const Login: React.FC = () => {
                         Введите свои данные для продолжения
                     </p>
                 </div>
+
+                {oauthError && (
+                    <div className="mb-4 p-3 rounded-lg bg-destructive/10 border border-destructive/20">
+                        <p className="text-sm text-destructive text-center">{oauthError}</p>
+                    </div>
+                )}
 
                 <form onSubmit={handleSubmit} className="space-y-4 mb-4">
                     {errors.general && (
@@ -142,15 +149,7 @@ const Login: React.FC = () => {
                         type="button"
                         variant="outline"
                         className="w-full"
-                        onClick={() => handleOAuthLogin('vk')}
-                    >
-                        Войти через ВКонтакте
-                    </Button>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        className="w-full"
-                        onClick={() => handleOAuthLogin('yandex')}
+                        onClick={handleYandexLogin}
                     >
                         Войти через Яндекс
                     </Button>

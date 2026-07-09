@@ -17,7 +17,7 @@ import { Info, Users, Video } from 'lucide-react';
 interface CreateChatDialogProps {
     open: boolean;
     onClose: () => void;
-    onCreateChat: (data: { name: string; type: string; allowVideo: boolean }) => void;
+    onCreateChat: (data: { name: string; type: string; allowVideo: boolean }) => Promise<void>;
     isCreating: boolean;
     isPremium?: boolean;
 }
@@ -32,26 +32,40 @@ const CreateChatDialog: React.FC<CreateChatDialogProps> = ({
     const [chatName, setChatName] = useState('');
     const [chatType, setChatType] = useState<'private' | 'group'>('private');
     const [allowVideo, setAllowVideo] = useState(false);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!chatName.trim()) return;
 
-        onCreateChat({
-            name: chatName,
-            type: chatType,
-            allowVideo,
-        });
+        setErrorMessage(null);
 
-        setChatName('');
-        setChatType('private');
-        setAllowVideo(false);
+        try {
+            await onCreateChat({
+                name: chatName,
+                type: chatType,
+                allowVideo,
+            });
+
+            onClose();
+            setChatName('');
+            setChatType('private');
+            setAllowVideo(false);
+        } catch (error: any) {
+            const message = error?.data?.message || 'Ошибка при создании чата';
+            setErrorMessage(message);
+        }
     };
 
     const canEnableVideo = isPremium || chatType === 'private';
 
     return (
-        <Dialog open={open} onOpenChange={onClose}>
+        <Dialog open={open} onOpenChange={(isOpen) => {
+            if (!isOpen) {
+                onClose();
+                setErrorMessage(null);
+            }
+        }}>
             <DialogContent className="sm:max-w-[500px]">
                 <DialogHeader>
                     <DialogTitle>Создать новый чат</DialogTitle>
@@ -59,6 +73,11 @@ const CreateChatDialog: React.FC<CreateChatDialogProps> = ({
                         Создайте чат для общения или совместного просмотра видео
                     </DialogDescription>
                 </DialogHeader>
+                {errorMessage && (
+                    <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg mb-4">
+                        <p className="text-sm text-red-600 dark:text-red-400">{errorMessage}</p>
+                    </div>
+                )}
 
                 <form onSubmit={handleSubmit}>
                     <Tabs defaultValue="info" className="w-full">
@@ -119,17 +138,27 @@ const CreateChatDialog: React.FC<CreateChatDialogProps> = ({
 
                         <TabsContent value="participants" className="space-y-4 py-4">
                             <div className="text-sm text-muted-foreground space-y-2">
-                                <p>После создания чата вы сможете:</p>
+                                <p>После создания чата:</p>
                                 <ul className="list-disc list-inside space-y-1">
-                                    <li>Добавлять друзей по ID или никнейму</li>
-                                    <li>Создавать ссылки-приглашения</li>
-                                    <li>Управлять правами участников</li>
+                                    <li>Добавляйте друзей в участники чата</li>
                                 </ul>
-                                {chatType === 'group' && !isPremium && (
+
+                                {chatType === 'private' ? (
+                                    <div className="mt-4 p-3 bg-muted rounded-lg">
+                                        <p className="text-xs">
+                                            👤 Личный чат — это диалог 1-на-1: вы и один участник.
+                                        </p>
+                                    </div>
+                                ) : isPremium ? (
+                                    <div className="mt-4 p-3 bg-muted rounded-lg">
+                                        <p className="text-xs">
+                                            👥 Групповой чат — до 50 участников.
+                                        </p>
+                                    </div>
+                                ) : (
                                     <div className="mt-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
                                         <p className="text-amber-600 text-xs">
-                                            ⚠️ В бесплатном режиме групповые чаты ограничены 3 участниками.
-                                            Для группового просмотра видео требуется Premium.
+                                            ⚠️ Создание группового чата и добавление участников доступны только с Premium (до 50 участников).
                                         </p>
                                     </div>
                                 )}

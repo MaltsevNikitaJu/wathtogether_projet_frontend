@@ -8,7 +8,7 @@ interface WatchInvitation {
   username: string;
   user_id: number;
   type: string;
-  videoUrl?: string;
+  video_url?: string;
   isRead: boolean;
 }
 

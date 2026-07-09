@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     Dialog,
     DialogContent,
@@ -13,6 +13,8 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Settings, Shield, Bell, EyeOff, Volume2, Video } from 'lucide-react';
+import { useGetChatQuery, useGetChatSettingsQuery, useUpdateChatMutation, useUpdateChatSettingsMutation } from '../api/apiSlice';
+import { getSocket } from '../utils/socket';
 
 interface ChatSettingsDialogProps {
     open: boolean;
@@ -26,19 +28,90 @@ interface ChatSettingsDialogProps {
 const ChatSettingsDialog: React.FC<ChatSettingsDialogProps> = ({
     open,
     onClose,
+    chatId,
     chatName,
     isCreator,
     participantsCount,
 }) => {
-    const [chatNameEdit, setChatNameEdit] = useState(chatName);
+    const { data: chatData } = useGetChatQuery(chatId, { skip: !open || !chatId });
+    const { data: settingsData } = useGetChatSettingsQuery(chatId, { skip: !open || !chatId });
+    const [updateChat] = useUpdateChatMutation();
+    const [updateChatSettings] = useUpdateChatSettingsMutation();
+
+    const [name, setName] = useState(chatName);
+    const [hostOnlyControls, setHostOnlyControls] = useState(false);
+    const [allowVideo, setAllowVideo] = useState(true);
     const [notifyMessages, setNotifyMessages] = useState(true);
     const [notifyVideo, setNotifyVideo] = useState(true);
     const [soundEnabled, setSoundEnabled] = useState(true);
-    const [hostOnlyControls, setHostOnlyControls] = useState(false);
     const [showParticipants, setShowParticipants] = useState(true);
+    const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const [isSaving, setIsSaving] = useState(false);
 
-    const handleSave = () => {
-        onClose();
+    const originalHostOnly = !!chatData?.chat?.host_only_controls;
+
+    useEffect(() => {
+        if (chatData?.chat) {
+            setName(chatData.chat.name);
+            setHostOnlyControls(!!chatData.chat.host_only_controls);
+            setAllowVideo(chatData.chat.allow_video !== false);
+        }
+    }, [chatData]);
+
+    useEffect(() => {
+        if (settingsData?.settings) {
+            const s = settingsData.settings;
+            setNotifyMessages(s.notify_messages !== false);
+            setNotifyVideo(s.notify_video !== false);
+            setSoundEnabled(s.sound_enabled !== false);
+            setShowParticipants(s.show_participants !== false);
+        }
+    }, [settingsData]);
+
+    const handleSave = async () => {
+        setIsSaving(true);
+        setMessage(null);
+
+        try {
+            await updateChatSettings({
+                chatId,
+                notify_messages: notifyMessages,
+                notify_video: notifyVideo,
+                sound_enabled: soundEnabled,
+                show_participants: showParticipants,
+            }).unwrap();
+
+            if (isCreator) {
+                await updateChat({
+                    chatId,
+                    name,
+                    host_only_controls: hostOnlyControls,
+                    allow_video: allowVideo,
+                }).unwrap();
+
+                if (hostOnlyControls !== originalHostOnly) {
+                    try {
+                        const socket = getSocket();
+                        socket.emit('chat_settings_changed', {
+                            chatId: String(chatId),
+                            host_only_controls: hostOnlyControls,
+                        });
+                    } catch {
+                    }
+                }
+            }
+
+            setMessage({ type: 'success', text: 'Настройки сохранены' });
+            setTimeout(() => {
+                setMessage(null);
+                onClose();
+            }, 1000);
+        } catch (err: unknown) {
+            const errorData = err as { data?: { message?: string } };
+            setMessage({ type: 'error', text: errorData.data?.message || 'Ошибка при сохранении настроек' });
+        } finally {
+            setIsSaving(false);
+        }
     };
 
     return (
@@ -53,6 +126,16 @@ const ChatSettingsDialog: React.FC<ChatSettingsDialogProps> = ({
                         Управление параметрами чата и уведомлений
                     </DialogDescription>
                 </DialogHeader>
+
+                {message && (
+                    <div className={`p-3 rounded-lg ${
+                        message.type === 'success'
+                            ? 'bg-green-500/10 border border-green-500/20 text-green-600 dark:text-green-400'
+                            : 'bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400'
+                    }`}>
+                        <p className="text-sm font-medium">{message.text}</p>
+                    </div>
+                )}
 
                 <Tabs defaultValue="general" className="w-full">
                     <TabsList className="grid w-full grid-cols-4">
@@ -78,10 +161,11 @@ const ChatSettingsDialog: React.FC<ChatSettingsDialogProps> = ({
                             <Label htmlFor="chatNameEdit">Название чата</Label>
                             <Input
                                 id="chatNameEdit"
-                                value={chatNameEdit}
-                                onChange={(e) => setChatNameEdit(e.target.value)}
+                                value={name}
+                                onChange={(e) => setName(e.target.value)}
                                 placeholder="Введите название чата"
                                 disabled={!isCreator}
+                                maxLength={100}
                             />
                             {!isCreator && (
                                 <p className="text-xs text-muted-foreground">
@@ -94,7 +178,7 @@ const ChatSettingsDialog: React.FC<ChatSettingsDialogProps> = ({
                             <div className="space-y-0.5">
                                 <Label>Показывать участников</Label>
                                 <p className="text-xs text-muted-foreground">
-                                    Отображать список участников чата
+                                    Отображать список участников в панели чата
                                 </p>
                             </div>
                             <Switch
@@ -109,7 +193,7 @@ const ChatSettingsDialog: React.FC<ChatSettingsDialogProps> = ({
                             <div className="space-y-0.5">
                                 <Label>Уведомления о сообщениях</Label>
                                 <p className="text-xs text-muted-foreground">
-                                    Получать уведомления о новых сообщениях
+                                    Звук при получении новых текстовых сообщений
                                 </p>
                             </div>
                             <Switch
@@ -122,7 +206,7 @@ const ChatSettingsDialog: React.FC<ChatSettingsDialogProps> = ({
                             <div className="space-y-0.5">
                                 <Label>Уведомления о видео</Label>
                                 <p className="text-xs text-muted-foreground">
-                                    Когда кто-то запускает/останавливает видео
+                                    Браузерные уведомления о приглашениях на просмотр
                                 </p>
                             </div>
                             <Switch
@@ -136,7 +220,7 @@ const ChatSettingsDialog: React.FC<ChatSettingsDialogProps> = ({
                                 <Label>Звуковые уведомления</Label>
                                 <p className="text-xs text-muted-foreground">
                                     <Volume2 className="h-3 w-3 inline mr-1" />
-                                    Звук при получении сообщений
+                                    Общий звуковой сигнал при новых сообщениях
                                 </p>
                             </div>
                             <Switch
@@ -151,7 +235,7 @@ const ChatSettingsDialog: React.FC<ChatSettingsDialogProps> = ({
                             <div className="space-y-0.5">
                                 <Label htmlFor="hostOnly">Только ведущий управляет</Label>
                                 <p className="text-xs text-muted-foreground">
-                                    Только создатель чата может управлять воспроизведением
+                                    Только создатель чата может управлять воспроизведением (пауза/перемотка)
                                 </p>
                             </div>
                             <Switch
@@ -163,9 +247,24 @@ const ChatSettingsDialog: React.FC<ChatSettingsDialogProps> = ({
                         </div>
                         {!isCreator && (
                             <p className="text-xs text-muted-foreground">
-                                Настройку может изменить только создатель чата
+                                Настройку может изменить только создатель
                             </p>
                         )}
+
+                        <div className="flex items-center justify-between">
+                            <div className="space-y-0.5">
+                                <Label htmlFor="allowVideo">Разрешить совместный просмотр</Label>
+                                <p className="text-xs text-muted-foreground">
+                                    Участники смогут запускать видео в этом чате
+                                </p>
+                            </div>
+                            <Switch
+                                id="allowVideo"
+                                checked={allowVideo}
+                                onCheckedChange={setAllowVideo}
+                                disabled={!isCreator}
+                            />
+                        </div>
 
                         <div className="p-3 bg-muted/50 rounded-lg space-y-2">
                             <p className="text-sm font-medium flex items-center gap-2">
@@ -205,11 +304,11 @@ const ChatSettingsDialog: React.FC<ChatSettingsDialogProps> = ({
                 </Tabs>
 
                 <DialogFooter className="mt-4">
-                    <Button type="button" variant="outline" onClick={onClose}>
+                    <Button type="button" variant="outline" onClick={onClose} disabled={isSaving}>
                         Отмена
                     </Button>
-                    <Button type="button" onClick={handleSave}>
-                        Сохранить
+                    <Button type="button" onClick={handleSave} disabled={isSaving}>
+                        {isSaving ? 'Сохранение...' : 'Сохранить'}
                     </Button>
                 </DialogFooter>
             </DialogContent>

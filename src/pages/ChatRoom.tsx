@@ -1,14 +1,15 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useGetMessagesQuery, useGetProfileQuery } from '../api/apiSlice';
+import { useGetMessagesQuery, useGetProfileQuery, useGetChatQuery, useGetChatSettingsQuery, useJoinChatMutation } from '../api/apiSlice';
 import { getSocket } from '../utils/socket';
 import { getToken } from '../utils/token';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { X, Info, Play, MoreVertical } from 'lucide-react';
+import { X, Play, MoreVertical, Share2, Check } from 'lucide-react';
 import WatchTogetherDialog from '../components/WatchTogetherDialog';
+import { useConfirm } from '../lib/confirm';
 
 interface Message {
     id: number;
@@ -17,7 +18,8 @@ interface Message {
     username: string;
     user_id: number;
     type?: 'text' | 'system' | 'watch_invitation';
-    videoUrl?: string;
+    video_url?: string;
+    avatar_url?: string;
 }
 
 interface ChatRoomProps {
@@ -27,6 +29,28 @@ interface ChatRoomProps {
     onToggleInfo?: () => void;
     onBackToList?: () => void;
 }
+
+let audioCtx: AudioContext | null = null;
+const playNotificationSound = () => {
+    try {
+        if (!audioCtx) {
+            const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+            if (!Ctx) return;
+            audioCtx = new Ctx();
+        }
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.25);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.25);
+    } catch {
+    }
+};
 
 const ChatRoom: React.FC<ChatRoomProps> = ({ chatId: propChatId, chatName, onClose, onToggleInfo, onBackToList }) => {
     const { id: routeId } = useParams<{ id: string }>();
@@ -55,18 +79,37 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ chatId: propChatId, chatName, onClo
     const [showWatchDialog, setShowWatchDialog] = useState(false);
     const [onlineInfo, setOnlineInfo] = useState<{ onlineCount: number; totalParticipants: number } | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const [copied, setCopied] = useState(false);
+
+    const staticUrl = (import.meta.env.VITE_API_URL || 'http://localhost:3001/api').replace(/\/api$/, '');
+
+    const handleShare = async () => {
+        if (!id) return;
+        const url = `${window.location.origin}/chats/${id}`;
+        try {
+            await navigator.clipboard.writeText(url);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        } catch {}
+    };
 
     const { data: profileData } = useGetProfileQuery();
     const myUserId = profileData?.user?.id;
-    const { data, isLoading } = useGetMessagesQuery(String(id || ''));
+    const { data, isLoading, refetch: refetchMessages } = useGetMessagesQuery(String(id || ''));
+    const { data: chatData, error: chatError } = useGetChatQuery(String(id || ''), { skip: !id });
+    const { data: settingsData } = useGetChatSettingsQuery(String(id || ''), { skip: !id });
+    const [joinChat, { isLoading: isJoining }] = useJoinChatMutation();
+    const { alert } = useConfirm();
+    const allowVideo = chatData?.chat?.allow_video !== false;
+    const settings = settingsData?.settings;
+    const isForbidden = (chatError as { status?: number } | undefined)?.status === 403;
+    const settingsRef = useRef(settings);
+    useEffect(() => {
+        settingsRef.current = settings;
+    }, [settings]);
 
     useEffect(() => {
         if (data?.messages) {
-            console.log('Messages loaded from API:', {
-                count: data.messages.length,
-                types: data.messages.map(m => ({ id: m.id, type: m.type, content: m.content.substring(0, 20) })),
-                allMessages: data.messages
-            });
             setMessages(data.messages);
         }
     }, [data, myUserId]);
@@ -86,15 +129,24 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ chatId: propChatId, chatName, onClo
         socket.emit('join_chat', id);
 
         const handleNewMessage = (payload: Message) => {
-            console.log('New message received:', payload);
+            const isMine = payload.user_id === myUserId;
+            const s = settingsRef.current;
 
-            if (payload.type === 'watch_invitation' && payload.user_id !== myUserId) {
-                if ('Notification' in window && Notification.permission === 'granted') {
+            if (payload.type === 'watch_invitation' && !isMine) {
+                if (s?.notify_video !== false && 'Notification' in window && Notification.permission === 'granted') {
                     new Notification(`${payload.username} приглашает посмотреть видео!`, {
                         body: 'Нажмите, чтобы присоединиться к просмотру',
-                        icon: '/video-icon.png',
                         tag: `watch-invitation-${payload.id}`,
                     });
+                }
+            }
+
+            if (!isMine && s?.sound_enabled !== false) {
+                const shouldSound = payload.type === 'text'
+                    ? s?.notify_messages !== false
+                    : s?.notify_video !== false;
+                if (shouldSound && payload.type !== 'system') {
+                    playNotificationSound();
                 }
             }
 
@@ -110,7 +162,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ chatId: propChatId, chatName, onClo
         };
 
         const handleChatInfo = (info: { onlineCount: number; totalParticipants: number }) => {
-            console.log('Chat info received:', info);
             setOnlineInfo(info);
         };
 
@@ -141,6 +192,35 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ chatId: propChatId, chatName, onClo
         else navigate('/chats');
     };
 
+    const handleJoin = async () => {
+        if (!id) return;
+        try {
+            await joinChat(id).unwrap();
+            refetchMessages();
+            try { getSocket().emit('join_chat', id); } catch {}
+        } catch (err: unknown) {
+            const errorData = err as { data?: { message?: string } };
+            await alert({ title: 'Не удалось вступить', description: errorData.data?.message || 'Ошибка', variant: 'danger' });
+        }
+    };
+
+    if (isForbidden) {
+        return (
+            <div className="flex h-full flex-col items-center justify-center bg-background p-6 text-center gap-5">
+                <div className="max-w-sm space-y-2">
+                    <h2 className="text-lg font-semibold">У вас нет доступа к этому чату</h2>
+                    <p className="text-sm text-muted-foreground">
+                        Этот чат открыт по ссылке. Вступите, чтобы участвовать в общении и совместном просмотре.
+                    </p>
+                </div>
+                <Button onClick={handleJoin} disabled={isJoining}>
+                    {isJoining ? 'Вступление...' : 'Вступить в чат'}
+                </Button>
+                <Button onClick={handleBack} variant="ghost" size="sm">← Назад к чатам</Button>
+            </div>
+        );
+    }
+
     if (isLoading) return <div className="flex h-full items-center justify-center p-4 text-sm">Загрузка...</div>;
 
     return (
@@ -150,7 +230,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ chatId: propChatId, chatName, onClo
                     {onClose ? <X className="h-4 w-4" /> : <span>←</span>}
                 </Button>
                 <div className="flex-1 min-w-0">
-                    <h2 className="font-semibold text-sm truncate">{chatName || `Чат #${id}`}</h2>
+                    <h2 className="font-semibold text-sm truncate">{chatName || chatData?.chat?.name || 'Чат'}</h2>
                     {onlineInfo && (
                         <p className="text-xs text-muted-foreground">
                             {onlineInfo.onlineCount > 0
@@ -166,19 +246,21 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ chatId: propChatId, chatName, onClo
                             variant="default"
                             size="sm"
                             className="h-8 gap-1 sm:gap-2 shrink-0"
+                            disabled={!allowVideo}
+                            title={!allowVideo ? 'Совместный просмотр отключён создателем чата' : undefined}
                             onClick={() => setShowWatchDialog(true)}
                         >
                             <Play className="h-4 w-4" />
                             <span className="hidden sm:inline">Смотреть вместе</span>
                         </Button>
+                        <Button variant="ghost" size="icon" onClick={handleShare} className="h-8 w-8 shrink-0" title="Поделиться ссылкой на чат">
+                            {copied ? <Check className="h-4 w-4 text-green-500" /> : <Share2 className="h-4 w-4" />}
+                        </Button>
                         <Button variant="ghost" size="icon" onClick={onToggleInfo} className="h-8 w-8 shrink-0" title="Информация о чате">
-                            <Info className="h-4 w-4" />
+                            <MoreVertical className="h-4 w-4" />
                         </Button>
                     </>
                 )}
-                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                    <MoreVertical className="h-4 w-4" />
-                </Button>
             </div>
             <ScrollArea className="flex-1 min-h-0 p-2 sm:p-4 overflow-y-auto">
                 <div className="space-y-4">
@@ -188,14 +270,9 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ chatId: propChatId, chatName, onClo
                         </div>
                     )}
                     {messages.map((msg) => {
-                        const isUrl = /^(https?:\/\/)|(www\.)/.test(msg.content);
                         const isMyMessage = msg.user_id === myUserId;
                         const isSystemMessage = msg.type === 'system';
                         const isWatchInvitation = msg.type === 'watch_invitation';
-
-                        if (msg.type === 'watch_invitation') {
-                            console.log('Rendering watch invitation:', msg);
-                        }
 
                         if (isSystemMessage) {
                             return (
@@ -225,8 +302,8 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ chatId: propChatId, chatName, onClo
                                             variant="secondary"
                                             className="w-full bg-white text-blue-600 hover:bg-white/90"
                                             onClick={() => {
-                                                if (msg.videoUrl) {
-                                                    navigate(`/watch?chatId=${id}&url=${encodeURIComponent(msg.videoUrl)}`);
+                                                if (msg.video_url) {
+                                                    navigate(`/watch?chatId=${id}&url=${encodeURIComponent(msg.video_url)}`);
                                                 }
                                             }}
                                         >
@@ -242,21 +319,16 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ chatId: propChatId, chatName, onClo
                             <div key={msg.id} className={`flex items-end gap-2 ${isMyMessage ? 'justify-end' : 'justify-start'}`}>
                                 {!isMyMessage && (
                                     <Avatar className="h-8 w-8 shrink-0">
-                                        <AvatarFallback className="text-xs">{(msg.username?.[0] || '?').toUpperCase()}</AvatarFallback>
+                                        {msg.avatar_url ? (
+                                            <img src={`${staticUrl}${msg.avatar_url}`} alt={msg.username} className="w-full h-full object-cover" />
+                                        ) : (
+                                            <AvatarFallback className="text-xs">{(msg.username?.[0] || '?').toUpperCase()}</AvatarFallback>
+                                        )}
                                     </Avatar>
                                 )}
                                 <div className={`max-w-[85%] sm:max-w-[70%] rounded-2xl px-3 py-2 sm:px-4 shadow-sm ${isMyMessage ? 'bg-primary text-primary-foreground rounded-br-sm' : 'bg-muted text-foreground rounded-bl-sm'}`}>
                                     {!isMyMessage && <div className="mb-1 text-xs font-medium text-muted-foreground">{msg.username}</div>}
-                                    {isUrl ? (
-                                        <div>
-                                            <div className={`text-xs mb-2 break-all ${isMyMessage ? 'text-primary-foreground/70' : 'text-blue-500'}`}>{msg.content}</div>
-                                            <Button size="sm" variant={isMyMessage ? 'secondary' : 'outline'} onClick={() => navigate(`/watch?chatId=${id}&url=${encodeURIComponent(msg.content)}`)}>
-                                                ▶ Смотреть вместе
-                                            </Button>
-                                        </div>
-                                    ) : (
-                                        <div className="text-sm">{msg.content}</div>
-                                    )}
+                                    <div className="text-sm break-all">{msg.content}</div>
                                 </div>
                             </div>
                         );

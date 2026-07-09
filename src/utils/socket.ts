@@ -26,14 +26,6 @@ export const getSocket = (): Socket => {
         transports: ['websocket'],
     });
 
-    socket.on('connect_error', (error) => {
-        console.error('Socket connection error:', error.message);
-    });
-
-    socket.on('disconnect', (reason) => {
-        console.warn('Socket disconnected:', reason);
-    });
-
     return socket;
 };
 

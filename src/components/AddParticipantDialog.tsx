@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
     Dialog,
     DialogContent,
@@ -13,13 +13,12 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { UserPlus, Search, Users } from 'lucide-react';
 import { useGetFriendsQuery } from '../api/apiSlice';
-import { useToast } from '../hooks/useToast';
 
 interface AddParticipantDialogProps {
     open: boolean;
     onClose: () => void;
     chatId: string | number;
-    onAddParticipant: (userId: number, username: string) => void;
+    onAddParticipant: (userId: number, username: string) => Promise<void>;
     currentParticipants?: number[];
 }
 
@@ -30,7 +29,13 @@ const AddParticipantDialog: React.FC<AddParticipantDialogProps> = ({
     currentParticipants = [],
 }) => {
     const [searchQuery, setSearchQuery] = useState('');
-    const { data: friendsData, isLoading } = useGetFriendsQuery();
+    const [isLoading, setIsLoading] = useState(false);
+    const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const { data: friendsData, isLoading: isFriendsLoading, refetch: refetchFriends } = useGetFriendsQuery();
+
+    useEffect(() => {
+        if (open) refetchFriends();
+    }, [open, refetchFriends]);
 
     const friends = friendsData?.friends || [];
     const staticUrl = (import.meta.env.VITE_API_URL || 'http://localhost:3001/api').replace(/\/api$/, '');
@@ -43,13 +48,34 @@ const AddParticipantDialog: React.FC<AddParticipantDialogProps> = ({
         });
     }, [friends, currentParticipants, searchQuery]);
 
-    const handleAddUser = (userId: number, username: string) => {
-        onAddParticipant(userId, username);
-        setSearchQuery('');
+    const handleAddUser = async (userId: number, username: string) => {
+        setIsLoading(true);
+        setMessage(null);
+
+        try {
+            await onAddParticipant(userId, username);
+            setMessage({ type: 'success', text: `${username} успешно добавлен в чат!` });
+            setSearchQuery('');
+
+            setTimeout(() => {
+                onClose();
+                setMessage(null);
+            }, 2000);
+        } catch (error: any) {
+            const errorMessage = error?.data?.message || 'Ошибка при добавлении участника';
+            setMessage({ type: 'error', text: errorMessage });
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     return (
-        <Dialog open={open} onOpenChange={onClose}>
+        <Dialog open={open} onOpenChange={(isOpen) => {
+            if (!isOpen && !isLoading) {
+                onClose();
+                setMessage(null);
+            }
+        }}>
             <DialogContent className="sm:max-w-[500px]">
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
@@ -60,6 +86,16 @@ const AddParticipantDialog: React.FC<AddParticipantDialogProps> = ({
                         Вы можете добавлять в чат только своих друзей
                     </DialogDescription>
                 </DialogHeader>
+
+                {message && (
+                    <div className={`p-3 rounded-lg mb-4 ${
+                        message.type === 'success'
+                            ? 'bg-green-500/10 border border-green-500/20 text-green-600 dark:text-green-400'
+                            : 'bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400'
+                    }`}>
+                        <p className="text-sm font-medium">{message.text}</p>
+                    </div>
+                )}
 
                 <div className="space-y-4 py-4">
                     <div className="relative">
@@ -73,7 +109,7 @@ const AddParticipantDialog: React.FC<AddParticipantDialogProps> = ({
                     </div>
 
                     <ScrollArea className="h-64 rounded-lg border">
-                        {isLoading ? (
+                        {isFriendsLoading ? (
                             <div className="p-4 text-center text-sm text-muted-foreground">
                                 Загрузка друзей...
                             </div>
@@ -116,8 +152,9 @@ const AddParticipantDialog: React.FC<AddParticipantDialogProps> = ({
                                         <Button
                                             size="sm"
                                             onClick={() => handleAddUser(friend.id, friend.username)}
+                                            disabled={isLoading}
                                         >
-                                            Добавить
+                                            {isLoading ? 'Добавление...' : 'Добавить'}
                                         </Button>
                                     </div>
                                 ))}

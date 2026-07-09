@@ -38,12 +38,7 @@ const WatchTogetherDialog: React.FC<WatchTogetherDialogProps> = ({ open, onClose
     useEffect(() => {
         const socket = getSocket();
 
-        const handleInvitationSent = (data: {
-            success: boolean;
-            chatId: string;
-            message: string;
-        }) => {
-            console.log('Invitation sent confirmation:', data);
+        const handleInvitationSent = () => {
             setInvitationStatus('sent');
 
             setTimeout(() => {
@@ -52,8 +47,7 @@ const WatchTogetherDialog: React.FC<WatchTogetherDialogProps> = ({ open, onClose
             }, 1500);
         };
 
-        const handleSocketError = (error: { message: string }) => {
-            console.error('Socket error:', error);
+        const handleSocketError = () => {
             setInvitationStatus('error');
             setIsLoading(false);
         };
@@ -84,8 +78,7 @@ const WatchTogetherDialog: React.FC<WatchTogetherDialogProps> = ({ open, onClose
                 username: user?.username || 'Пользователь',
             });
 
-        } catch (error) {
-            console.error('Socket error:', error);
+        } catch {
             setInvitationStatus('error');
             setIsLoading(false);
             setTimeout(() => {
@@ -101,8 +94,7 @@ const WatchTogetherDialog: React.FC<WatchTogetherDialogProps> = ({ open, onClose
             if (text) {
                 setVideoUrl(text);
             }
-        } catch (err) {
-            console.error('Failed to read clipboard:', err);
+        } catch {
         }
     };
 

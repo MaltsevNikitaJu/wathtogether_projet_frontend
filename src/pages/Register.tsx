@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useRegisterMutation } from '../api/apiSlice';
-import { useToast } from '../hooks/useToast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -15,7 +14,6 @@ const Register: React.FC = () => {
 
     const [register, { isLoading }] = useRegisterMutation();
     const navigate = useNavigate();
-    const { success, info } = useToast();
 
     const validateForm = () => {
         const newErrors: { username?: string; email?: string; password?: string; general?: string } = {};
@@ -53,7 +51,6 @@ const Register: React.FC = () => {
 
         try {
             await register({ username, email, password }).unwrap();
-            success('Регистрация успешна! Теперь войдите.');
             navigate('/login');
         } catch (err) {
             const errorData = err as { data?: { message?: string } };
@@ -62,8 +59,9 @@ const Register: React.FC = () => {
         }
     };
 
-    const handleOAuthLogin = (provider: 'vk' | 'yandex') => {
-        info(`Регистрация через ${provider === 'vk' ? 'ВКонтакте' : 'Яндекс'} будет добавлена позже.`);
+    const handleYandexLogin = () => {
+        const backendBase = (import.meta.env.VITE_API_URL || 'http://localhost:3001/api').replace(/\/api$/, '');
+        window.location.href = `${backendBase}/api/auth/yandex`;
     };
 
     return (
@@ -166,15 +164,7 @@ const Register: React.FC = () => {
                         type="button"
                         variant="outline"
                         className="w-full"
-                        onClick={() => handleOAuthLogin('vk')}
-                    >
-                        Войти через ВКонтакте
-                    </Button>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        className="w-full"
-                        onClick={() => handleOAuthLogin('yandex')}
+                        onClick={handleYandexLogin}
                     >
                         Войти через Яндекс
                     </Button>

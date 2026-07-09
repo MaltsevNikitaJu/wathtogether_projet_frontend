@@ -1,25 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { UserPlus, Check, X, Users, ArrowLeft } from 'lucide-react';
+import { UserPlus, Check, X, Users, ArrowLeft, CheckCircle, XCircle } from 'lucide-react';
 import { useGetFriendRequestsQuery, useRespondFriendRequestMutation } from '../api/apiSlice';
-import { useToast } from '../hooks/useToast';
-
-interface FriendRequest {
-    id: number;
-    requester: {
-        id: number;
-        username: string;
-        avatar_url?: string;
-    };
-    created_at: string;
-}
 
 const FriendRequests: React.FC = () => {
     const navigate = useNavigate();
-    const { success, error } = useToast();
+    const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
     const { data: requestsData, isLoading, isError } = useGetFriendRequestsQuery();
     const [respondFriendRequest] = useRespondFriendRequestMutation();
 
@@ -32,19 +21,38 @@ const FriendRequests: React.FC = () => {
     };
 
     const handleResponse = async (requestId: number, action: 'accept' | 'reject') => {
+        setMessage(null);
+
         try {
             await respondFriendRequest({ requestId, action }).unwrap();
-            const message = action === 'accept' ? 'Заявка принята!' : 'Заявка отклонена';
-            success(message);
+            const messageText = action === 'accept' ? 'Заявка принята! Теперь вы друзья' : 'Заявка отклонена';
+            setMessage({ type: 'success', text: messageText });
+            setTimeout(() => setMessage(null), 3000);
         } catch (err) {
             const errorData = err as { data?: { message?: string } };
-            error(errorData.data?.message || 'Ошибка при обработке заявки');
+            setMessage({ type: 'error', text: errorData.data?.message || 'Ошибка при обработке заявки' });
+            setTimeout(() => setMessage(null), 5000);
         }
     };
 
     return (
         <div className="flex h-screen overflow-hidden bg-background">
             <div className="w-full max-w-2xl mx-auto p-4 sm:p-6 overflow-y-auto">
+                {message && (
+                    <div className={`mb-4 p-3 rounded-lg flex items-center gap-2 ${
+                        message.type === 'success'
+                            ? 'bg-green-500/10 border border-green-500/20 text-green-600 dark:text-green-400'
+                            : 'bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400'
+                    }`}>
+                        {message.type === 'success' ? (
+                            <CheckCircle className="h-4 w-4 shrink-0" />
+                        ) : (
+                            <XCircle className="h-4 w-4 shrink-0" />
+                        )}
+                        <p className="text-sm font-medium">{message.text}</p>
+                    </div>
+                )}
+
                 <div className="flex items-center justify-between mb-6">
                     <div className="flex items-center gap-3 min-w-0">
                         <Button variant="ghost" size="icon" onClick={() => navigate('/friends')} className="shrink-0">

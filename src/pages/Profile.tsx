@@ -5,9 +5,8 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
+import { CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import { useGetProfileQuery, useUpdateProfileMutation, useUploadAvatarMutation, useGetWatchHistoryQuery } from '../api/apiSlice';
-import { useToast } from '../hooks/useToast';
 import { apiSlice } from '../api/apiSlice';
 
 const WatchHistorySection: React.FC = () => {
@@ -55,7 +54,7 @@ const Profile: React.FC = () => {
     const { data: profileData, isLoading } = useGetProfileQuery();
     const [updateProfile, { isLoading: isUpdating }] = useUpdateProfileMutation();
     const [uploadAvatar, { isLoading: isUploading }] = useUploadAvatarMutation();
-    const { success, error, warning } = useToast();
+    const [message, setMessage] = useState<{ type: 'success' | 'error' | 'warning'; text: string } | null>(null);
 
     const [username, setUsername] = useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -67,17 +66,25 @@ const Profile: React.FC = () => {
     }, [profileData]);
 
     const handleSave = async () => {
+        setMessage(null);
+
         try {
             if (username !== profileData?.user?.username) {
                 await updateProfile({ username }).unwrap();
-                success('Профиль обновлен!');
+                setMessage({ type: 'success', text: 'Профиль обновлен!' });
                 dispatch(apiSlice.util.invalidateTags(['User']));
+
+                setTimeout(() => setMessage(null), 3000);
             } else {
-                warning('Нет изменений для сохранения');
+                setMessage({ type: 'warning', text: 'Нет изменений для сохранения' });
+
+                setTimeout(() => setMessage(null), 3000);
             }
         } catch (err: unknown) {
             const errorData = err as { data?: { message?: string } };
-            error(errorData.data?.message || 'Ошибка при обновлении профиля');
+            setMessage({ type: 'error', text: errorData.data?.message || 'Ошибка при обновлении профиля' });
+
+            setTimeout(() => setMessage(null), 5000);
         }
     };
 
@@ -87,36 +94,50 @@ const Profile: React.FC = () => {
 
         const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
         if (!allowedTypes.includes(file.type)) {
-            error('Только изображения (JPEG, PNG, GIF, WebP) разрешены');
+            setMessage({ type: 'error', text: 'Только изображения (JPEG, PNG, GIF, WebP) разрешены' });
+            setTimeout(() => setMessage(null), 5000);
             return;
         }
 
         if (file.size > 5 * 1024 * 1024) {
-            error('Файл слишком большой. Максимум 5MB');
+            setMessage({ type: 'error', text: 'Файл слишком большой. Максимум 5MB' });
+            setTimeout(() => setMessage(null), 5000);
             return;
         }
 
         const formData = new FormData();
         formData.append('avatar', file);
 
+        setMessage(null);
+
         try {
-            const response = await uploadAvatar(formData).unwrap();
-            success('Аватар обновлен!');
+            await uploadAvatar(formData).unwrap();
+            setMessage({ type: 'success', text: 'Аватар обновлен!' });
             dispatch(apiSlice.util.invalidateTags(['User']));
+
+            setTimeout(() => setMessage(null), 3000);
         } catch (err: unknown) {
             const errorData = err as { data?: { message?: string } };
-            error(errorData.data?.message || 'Ошибка при загрузке аватара');
+            setMessage({ type: 'error', text: errorData.data?.message || 'Ошибка при загрузке аватара' });
+
+            setTimeout(() => setMessage(null), 5000);
         }
     };
 
     const handleRemoveAvatar = async () => {
+        setMessage(null);
+
         try {
-            await updateProfile({ avatar_url: undefined }).unwrap();
-            success('Аватар удален');
+            await updateProfile({ avatar_url: null }).unwrap();
+            setMessage({ type: 'success', text: 'Аватар удален' });
             dispatch(apiSlice.util.invalidateTags(['User']));
+
+            setTimeout(() => setMessage(null), 3000);
         } catch (err: unknown) {
             const errorData = err as { data?: { message?: string } };
-            error(errorData.data?.message || 'Ошибка при удалении аватара');
+            setMessage({ type: 'error', text: errorData.data?.message || 'Ошибка при удалении аватара' });
+
+            setTimeout(() => setMessage(null), 5000);
         }
     };
 
@@ -138,6 +159,25 @@ const Profile: React.FC = () => {
     return (
         <div className="flex h-screen overflow-hidden bg-background">
             <div className="w-full max-w-2xl mx-auto p-4 sm:p-6 overflow-y-auto overflow-x-hidden">
+                {message && (
+                    <div className={`mb-4 p-3 rounded-lg flex items-center gap-2 ${
+                        message.type === 'success'
+                            ? 'bg-green-500/10 border border-green-500/20 text-green-600 dark:text-green-400'
+                            : message.type === 'warning'
+                            ? 'bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400'
+                            : 'bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400'
+                    }`}>
+                        {message.type === 'success' ? (
+                            <CheckCircle className="h-4 w-4 shrink-0" />
+                        ) : message.type === 'warning' ? (
+                            <AlertCircle className="h-4 w-4 shrink-0" />
+                        ) : (
+                            <XCircle className="h-4 w-4 shrink-0" />
+                        )}
+                        <p className="text-sm font-medium">{message.text}</p>
+                    </div>
+                )}
+
                 <div className="flex items-center justify-between mb-4 sm:mb-6">
                     <h1 className="text-xl sm:text-2xl font-bold truncate">Настройка профиля</h1>
                     <Button variant="outline" size="sm" onClick={() => navigate('/chats')} className="shrink-0 ml-2">

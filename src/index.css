@@ -123,3 +123,12 @@
     @apply bg-background text-foreground;
   }
 }
+
+@keyframes reactionFloat {
+  0% { transform: translateY(0) scale(0.8); opacity: 0; }
+  15% { opacity: 1; transform: translateY(-12px) scale(1.15); }
+  100% { transform: translateY(-240px) scale(1); opacity: 0; }
+}
+.reaction-float {
+  animation: reactionFloat 2.5s ease-out forwards;
+}

@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useGetChatsQuery, useCreateChatMutation, useGetProfileQuery, useAddChatParticipantMutation, useGetChatParticipantsQuery, useLeaveChatMutation } from '../api/apiSlice';
-import { removeToken } from '../utils/token';
+import { useNavigate, useParams } from 'react-router-dom';
+import { useGetChatsQuery, useCreateChatMutation, useGetProfileQuery, useAddChatParticipantMutation, useGetChatParticipantsQuery, useLeaveChatMutation, useGetSubscriptionQuery, useGetChatSettingsQuery } from '../api/apiSlice';
+import { removeToken, getToken } from '../utils/token';
 import { disconnectSocket } from '../utils/socket';
-import { useToast } from '../hooks/useToast';
-import { useWatchInvitations } from '../hooks/useWatchInvitations';
+import { useConfirm } from '../lib/confirm';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -26,18 +25,29 @@ import {
     Settings,
     Users,
     Info,
-    Video,
+    Crown,
+    Film,
+    Library,
 } from 'lucide-react';
 
 const ChatList: React.FC = () => {
     const navigate = useNavigate();
+    const { confirm, alert } = useConfirm();
     const { data, isLoading } = useGetChatsQuery();
     const { data: profileData } = useGetProfileQuery();
+    const { data: subscriptionData } = useGetSubscriptionQuery();
     const [createChat] = useCreateChatMutation();
     const [addParticipant] = useAddChatParticipantMutation();
     const [leaveChat] = useLeaveChatMutation();
 
     const [activeChatId, setActiveChatId] = useState<number | null>(null);
+    const { id: routeChatId } = useParams<{ id: string }>();
+
+    useEffect(() => {
+        if (routeChatId) {
+            setActiveChatId(Number(routeChatId));
+        }
+    }, [routeChatId]);
     const [showCreateDialog, setShowCreateDialog] = useState(false);
     const [showAddParticipantDialog, setShowAddParticipantDialog] = useState(false);
     const [showSettingsDialog, setShowSettingsDialog] = useState(false);
@@ -50,16 +60,19 @@ const ChatList: React.FC = () => {
     const { data: participantsData } = useGetChatParticipantsQuery(activeChatId || '', {
         skip: !activeChatId,
     });
+    const { data: settingsData } = useGetChatSettingsQuery(activeChatId || '', {
+        skip: !activeChatId,
+    });
+    const showParticipants = settingsData?.settings?.show_participants !== false;
     const currentParticipantIds = participantsData?.participants?.map((p: { id: number }) => p.id) || [];
 
     const user = profileData?.user;
-    const isPremium = user?.role === 'premium';
+    const subscription = subscriptionData?.subscription;
+    const isPremium = user?.role === 'premium' || user?.role === 'premium_plus';
 
     const filteredChats = data?.chats?.filter((chat: { id: number; name: string; type: string; created_by?: number }) =>
         chat.name.toLowerCase().includes(searchQuery.toLowerCase())
     ) || [];
-
-    const { error, success } = useToast();
 
     useEffect(() => {
         if (!data?.chats || !profileData?.user?.id) return;
@@ -71,7 +84,7 @@ const ChatList: React.FC = () => {
                 try {
                     const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001/api'}/chats/${chat.id}/messages`, {
                         headers: {
-                            'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                            'Authorization': `Bearer ${getToken()}`,
                         },
                     });
 
@@ -83,8 +96,7 @@ const ChatList: React.FC = () => {
                         ) || [];
                         invitationCounts[chat.id] = invitations.length;
                     }
-                } catch (err) {
-                    console.error(`Failed to load invitations for chat ${chat.id}:`, err);
+                } catch {
                     invitationCounts[chat.id] = 0;
                 }
             }
@@ -102,49 +114,46 @@ const ChatList: React.FC = () => {
     };
 
     const handleCreateChat = async (data: { name: string; type: string; allowVideo: boolean }) => {
-        try {
-            await createChat({
-                name: data.name,
-                type: data.type,
-            }).unwrap();
-            setShowCreateDialog(false);
-            success('Чат успешно создан!');
-        } catch {
-            error('Ошибка при создании чата. Попробуйте другое название.');
-        }
+        return createChat({
+            name: data.name,
+            type: data.type,
+            allow_video: data.allowVideo,
+        }).unwrap();
     };
 
-    const handleAddParticipant = async (userId: number, username: string) => {
-        if (!activeChatId) return;
-        try {
-            await addParticipant({
-                chatId: activeChatId,
-                userId,
-            }).unwrap();
-            success(`${username} добавлен в чат!`);
-        } catch (err: unknown) {
-            const errorData = err as { data?: { message?: string } };
-            error(errorData.data?.message || 'Ошибка при добавлении участника');
+    const handleAddParticipant = async (userId: number) => {
+        if (!activeChatId) {
+            throw new Error('Чат не выбран');
         }
+
+        await addParticipant({
+            chatId: activeChatId,
+            userId,
+        }).unwrap();
     };
 
     const handleLeaveChat = async () => {
         if (!activeChatId) return;
-        if (confirm('Выйти из чата?')) {
-            try {
-                await leaveChat({ chatId: activeChatId }).unwrap();
-                setActiveChatId(null);
-                setShowRightPanel(false);
-            } catch (err: unknown) {
-                const errorData = err as { data?: { message?: string } };
-                error(errorData.data?.message || 'Ошибка при выходе из чата');
-            }
+        const ok = await confirm({ title: 'Выйти из чата?', confirmText: 'Выйти', variant: 'danger' });
+        if (!ok) return;
+        try {
+            await leaveChat({ chatId: activeChatId }).unwrap();
+            setActiveChatId(null);
+            setShowRightPanel(false);
+        } catch (err: unknown) {
+            const errorData = err as { data?: { message?: string } };
+            await alert({ title: 'Не удалось выйти', description: errorData.data?.message || 'Ошибка при выходе из чата', variant: 'danger' });
         }
     };
 
     const activeChat: { id: number; name: string; type: string; created_by?: number } | undefined = filteredChats.find((c) => c.id === activeChatId);
     const isCreator = user?.id === activeChat?.created_by;
-    const isMobile = window.innerWidth < 768;
+    const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+    useEffect(() => {
+        const onResize = () => setIsMobile(window.innerWidth < 768);
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, []);
 
     return (
         <div className="flex h-screen bg-background overflow-hidden">
@@ -219,7 +228,7 @@ const ChatList: React.FC = () => {
                                                 )}
                                             </div>
                                             <div className="text-xs text-muted-foreground truncate">
-                                                {chat.type === 'video_room' ? '🎥 Видео' : '💬 Чат'}
+                                                {chat.type === 'group' ? '👥 Группа' : '👤 Личный'}
                                             </div>
                                         </div>
                                     )}
@@ -253,14 +262,39 @@ const ChatList: React.FC = () => {
                                 <User className="h-4 w-4 mr-2" />
                                 Профиль
                             </Button>
-                            {isPremium && (
+                            <Button
+                                variant="ghost"
+                                className="w-full justify-start h-9"
+                                onClick={() => navigate('/videos')}
+                            >
+                                <Film className="h-4 w-4 mr-2" />
+                                Мои видео
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                className="w-full justify-start h-9"
+                                onClick={() => navigate('/catalog')}
+                            >
+                                <Library className="h-4 w-4 mr-2" />
+                                Каталог
+                            </Button>
+                            {isPremium ? (
                                 <Button
                                     variant="ghost"
                                     className="w-full justify-start h-9 text-amber-600"
                                     onClick={() => navigate('/subscription')}
                                 >
-                                    <Settings className="h-4 w-4 mr-2" />
-                                    Premium
+                                    <Crown className="h-4 w-4 mr-2" />
+                                    Premium {subscription?.plan === 'premium_plus' ? '+' : ''}
+                                </Button>
+                            ) : (
+                                <Button
+                                    variant="ghost"
+                                    className="w-full justify-start h-9 text-amber-600 hover:text-amber-700"
+                                    onClick={() => navigate('/subscription')}
+                                >
+                                    <Crown className="h-4 w-4 mr-2" />
+                                    Получить Premium
                                 </Button>
                             )}
                             <Separator className="my-2" />
@@ -354,7 +388,7 @@ const ChatList: React.FC = () => {
                                 </Avatar>
                                 <h4 className="text-lg font-semibold">{activeChat.name}</h4>
                                 <p className="text-sm text-muted-foreground">
-                                    {activeChat.type === 'video_room' ? 'Видеочат' : 'Текстовый чат'}
+                                    {activeChat.type === 'group' ? 'Групповой чат' : 'Личный чат'}
                                 </p>
                             </div>
 
@@ -375,7 +409,7 @@ const ChatList: React.FC = () => {
                                     <div className="flex justify-between">
                                         <span>Создатель:</span>
                                         <span className="text-foreground">
-                                            {isCreator ? 'Вы' : `ID: ${activeChat.created_by}`}
+                                            {isCreator ? 'Вы' : (participantsData?.participants?.find((p) => p.is_creator)?.username || 'Создатель')}
                                         </span>
                                     </div>
                                 </div>
@@ -388,6 +422,7 @@ const ChatList: React.FC = () => {
                                     <Users className="h-4 w-4" />
                                     Участники ({participantsData?.participants?.length || 0})
                                 </h5>
+                                {showParticipants && (
                                 <div className="space-y-2 pr-1">
                                     {participantsData?.participants && participantsData.participants.length > 0 ? (
                                         <>
@@ -401,7 +436,7 @@ const ChatList: React.FC = () => {
                                                     <Avatar className="h-8 w-8 shrink-0">
                                                         {participant.avatar_url ? (
                                                             <img src={`${
-                                                                import.meta.env.VITE_STATIC_URL || 'http://localhost:3001'
+                                                                (import.meta.env.VITE_API_URL || 'http://localhost:3001/api').replace(/\/api$/, '')
                                                             }${participant.avatar_url}`} alt={participant.username} className="w-full h-full object-cover" />
                                                         ) : (
                                                             <AvatarFallback className="text-xs bg-primary text-primary-foreground">
@@ -433,15 +468,22 @@ const ChatList: React.FC = () => {
                                         <p className="text-sm text-muted-foreground text-center py-2">Нет участников</p>
                                     )}
                                 </div>
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="w-full"
-                                    onClick={() => setShowAddParticipantDialog(true)}
-                                >
-                                    <Plus className="h-4 w-4 mr-2" />
-                                    Добавить участника
-                                </Button>
+                                )}
+                                {activeChat?.type === 'group' || (participantsData?.participants?.length ?? 0) < 2 ? (
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="w-full"
+                                        onClick={() => setShowAddParticipantDialog(true)}
+                                    >
+                                        <Plus className="h-4 w-4 mr-2" />
+                                        Добавить участника
+                                    </Button>
+                                ) : (
+                                    <p className="text-xs text-muted-foreground text-center">
+                                        Личный чат — только два участника
+                                    </p>
+                                )}
                             </div>
 
                             <Separator />

@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import videojs from 'video.js';
 import 'video.js/dist/video-js.css';
 import { getSocket } from '../utils/socket';
-import { useGetMessagesQuery, useGetProfileQuery } from '../api/apiSlice';
+import { useGetMessagesQuery, useGetProfileQuery, useGetChatQuery } from '../api/apiSlice';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -16,7 +16,35 @@ interface Message {
     username: string;
     user_id: number;
     type?: 'text' | 'system';
+    avatar_url?: string;
 }
+
+interface QualityLevelsLike {
+    length: number;
+    on(event: string, listener: () => void): void;
+    [index: number]: { height: number; enabled: boolean };
+}
+
+const getQualityLevels = (player: ReturnType<typeof videojs>): QualityLevelsLike => {
+    return (player as unknown as { qualityLevels: () => QualityLevelsLike }).qualityLevels();
+};
+
+const applyQualityToPlayer = (player: ReturnType<typeof videojs>, value: string) => {
+    try {
+        const levels = getQualityLevels(player);
+        if (value === 'auto') {
+            for (let i = 0; i < levels.length; i++) levels[i].enabled = true;
+        } else {
+            const target = parseInt(value, 10);
+            for (let i = 0; i < levels.length; i++) {
+                levels[i].enabled = levels[i].height === target;
+            }
+        }
+    } catch {
+    }
+};
+
+const REACTIONS = ['👍', '❤️', '🔥', '😂', '😮', '🎉', '👏'];
 
 const WatchRoom: React.FC = () => {
     const navigate = useNavigate();
@@ -26,23 +54,71 @@ const WatchRoom: React.FC = () => {
 
     const containerRef = useRef<HTMLDivElement>(null);
     const playerRef = useRef<ReturnType<typeof videojs> | null>(null);
-    const isApplyingRemoteAction = useRef(false);
+    const lastRemoteApply = useRef(0);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
 
     const [messages, setMessages] = useState<Message[]>([]);
     const [newMessage, setNewMessage] = useState('');
     const [showSettings, setShowSettings] = useState(false);
+
+    const staticUrl = (import.meta.env.VITE_API_URL || 'http://localhost:3001/api').replace(/\/api$/, '');
     const [currentQuality, setCurrentQuality] = useState(() => localStorage.getItem('video-quality') || 'auto');
     const [currentSpeed, setCurrentSpeed] = useState(() => parseFloat(localStorage.getItem('video-speed') || '1'));
+    const [qualityOptions, setQualityOptions] = useState<string[]>(['auto']);
+    const [hostOnlyControls, setHostOnlyControls] = useState(false);
+
+    const hostOnlyControlsRef = useRef(false);
+    const isCreatorRef = useRef(false);
+    const [notice, setNotice] = useState<string | null>(null);
+    const [hasStarted, setHasStarted] = useState(false);
+    const [floaters, setFloaters] = useState<{ id: number; emoji: string; x: number }[]>([]);
+    const floaterIdRef = useRef(0);
+
+    const addFloater = (emoji: string) => {
+        const id = ++floaterIdRef.current;
+        const x = 8 + Math.round(Math.random() * 84);
+        setFloaters((prev) => [...prev, { id, emoji, x }]);
+        setTimeout(() => setFloaters((prev) => prev.filter((f) => f.id !== id)), 2500);
+    };
+
+    const handleReaction = (emoji: string) => {
+        if (!chatId) return;
+        addFloater(emoji);
+        const socket = getSocket();
+        socket.emit('send_reaction', { chatId, emoji });
+    };
 
     const { data: messagesData } = useGetMessagesQuery(chatId || '');
     const { data: profileData } = useGetProfileQuery();
+    const { data: chatData } = useGetChatQuery(chatId || '', { skip: !chatId });
     const myUserId = profileData?.user?.id;
+    const isCreator = myUserId !== undefined && chatData?.chat?.created_by === myUserId;
+    const controlsDisabled = hostOnlyControls && !isCreator;
 
     useEffect(() => {
         if (messagesData?.messages) setMessages(messagesData.messages);
     }, [messagesData, myUserId]);
+
+    useEffect(() => {
+        if (chatData?.chat) {
+            setHostOnlyControls(!!chatData.chat.host_only_controls);
+        }
+    }, [chatData]);
+
+    useEffect(() => {
+        hostOnlyControlsRef.current = hostOnlyControls;
+        isCreatorRef.current = isCreator;
+        if (playerRef.current) {
+            playerRef.current.controls(!controlsDisabled);
+        }
+    }, [hostOnlyControls, isCreator, controlsDisabled]);
+
+    useEffect(() => {
+        if (!notice) return;
+        const t = setTimeout(() => setNotice(null), 1800);
+        return () => clearTimeout(t);
+    }, [notice]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -86,14 +162,30 @@ const WatchRoom: React.FC = () => {
             }
         });
 
-        const sendSyncEvent = (action: string) => {
-            if (!isApplyingRemoteAction.current) {
-                socket.emit('video_action', {
-                    chatId,
-                    action,
-                    time: player.currentTime(),
-                });
+        const levels = getQualityLevels(player);
+        const updateQualityOptions = () => {
+            const heights = new Set<number>();
+            for (let i = 0; i < levels.length; i++) {
+                if (levels[i].height) heights.add(levels[i].height);
             }
+            const opts = ['auto', ...Array.from(heights).sort((a, b) => b - a).map(h => `${h}p`)];
+            setQualityOptions(opts);
+        };
+        levels.on('addqualitylevel', updateQualityOptions);
+        player.on('loadedmetadata', () => {
+            updateQualityOptions();
+            applyQualityToPlayer(player, localStorage.getItem('video-quality') || 'auto');
+        });
+
+        const sendSyncEvent = (action: string) => {
+            if (Date.now() - lastRemoteApply.current < 500) return;
+            if (hostOnlyControlsRef.current && !isCreatorRef.current) return;
+            if (action === 'play') setHasStarted(true);
+            socket.emit('video_action', {
+                chatId,
+                action,
+                time: player.currentTime(),
+            });
         };
 
         player.on('play', () => sendSyncEvent('play'));
@@ -101,9 +193,10 @@ const WatchRoom: React.FC = () => {
         player.on('seeked', () => sendSyncEvent('seek'));
 
         const handleVideoSync = (data: { action: string; time: number }) => {
-            isApplyingRemoteAction.current = true;
+            lastRemoteApply.current = Date.now();
 
             if (data.action === 'play') {
+                setHasStarted(true);
                 player.currentTime(data.time);
                 player.play()?.catch(() => {});
             } else if (data.action === 'pause') {
@@ -112,14 +205,11 @@ const WatchRoom: React.FC = () => {
             } else if (data.action === 'seek') {
                 player.currentTime(data.time);
             }
-
-            setTimeout(() => {
-                isApplyingRemoteAction.current = false;
-            }, 100);
         };
 
         const handleInitialState = (state: { action: string; time: number }) => {
-            isApplyingRemoteAction.current = true;
+            lastRemoteApply.current = Date.now();
+            setHasStarted(true);
             player.currentTime(state.time);
 
             if (state.action === 'pause') {
@@ -127,18 +217,32 @@ const WatchRoom: React.FC = () => {
             } else if (state.action === 'play') {
                 player.play()?.catch(() => {});
             }
+        };
 
-            setTimeout(() => {
-                isApplyingRemoteAction.current = false;
-            }, 200);
+        const handleSettingsUpdated = (data: { host_only_controls: boolean }) => {
+            setHostOnlyControls(!!data.host_only_controls);
+        };
+
+        const handleSocketError = (data: { message?: string }) => {
+            if (data?.message) setNotice(data.message);
+        };
+
+        const handleReactionEvent = (data: { emoji: string }) => {
+            addFloater(data.emoji);
         };
 
         socket.on('initial_video_state', handleInitialState);
         socket.on('sync_video', handleVideoSync);
+        socket.on('chat_settings_updated', handleSettingsUpdated);
+        socket.on('error', handleSocketError);
+        socket.on('reaction', handleReactionEvent);
 
         return () => {
             socket.off('initial_video_state', handleInitialState);
             socket.off('sync_video', handleVideoSync);
+            socket.off('chat_settings_updated', handleSettingsUpdated);
+            socket.off('error', handleSocketError);
+            socket.off('reaction', handleReactionEvent);
             socket.off('receive_message', handleNewMessage);
             socket.emit('leave_chat', chatId);
 
@@ -147,7 +251,7 @@ const WatchRoom: React.FC = () => {
                 playerRef.current = null;
             }
         };
-    }, [videoUrl, chatId, messagesData]);
+    }, [videoUrl, chatId]);
 
     const handleSend = (e: React.FormEvent) => {
         e.preventDefault();
@@ -160,6 +264,9 @@ const WatchRoom: React.FC = () => {
     const handleQualityChange = (quality: string) => {
         setCurrentQuality(quality);
         localStorage.setItem('video-quality', quality);
+        if (playerRef.current) {
+            applyQualityToPlayer(playerRef.current, quality);
+        }
     };
 
     const handleSpeedChange = (speed: number) => {
@@ -196,6 +303,11 @@ const WatchRoom: React.FC = () => {
                         <X className="h-4 w-4 mr-2" />
                         Закрыть
                     </Button>
+                    {controlsDisabled && (
+                        <span className="text-xs text-amber-400 hidden sm:inline">
+                            🔒 Режим «только ведущий» — управляет создатель
+                        </span>
+                    )}
                     <div className="flex items-center gap-2">
                         <Button
                             variant="ghost"
@@ -211,6 +323,44 @@ const WatchRoom: React.FC = () => {
                 <div className="flex-1 flex items-center justify-center p-2 sm:p-4 relative">
                     <div className="w-full max-w-6xl aspect-video bg-black rounded-lg overflow-hidden shadow-2xl">
                         <div ref={containerRef} className="w-full h-full" />
+                    </div>
+
+                    {notice && (
+                        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-zinc-900/90 text-white text-sm px-4 py-2 rounded-lg shadow-lg border border-zinc-700">
+                            {notice}
+                        </div>
+                    )}
+
+                    {!hasStarted && (
+                        <div className="absolute inset-2 sm:inset-4 z-10 flex flex-col items-center justify-center bg-black/60 rounded-lg text-center pointer-events-none">
+                            <p className="text-white text-lg font-medium">Ожидание участников…</p>
+                            <p className="text-zinc-300 text-sm mt-1">Нажмите Play, чтобы начать просмотр</p>
+                        </div>
+                    )}
+
+                    <div className="absolute inset-0 pointer-events-none overflow-hidden z-[5]">
+                        {floaters.map((f) => (
+                            <div
+                                key={f.id}
+                                className="absolute bottom-4 text-4xl reaction-float drop-shadow-lg"
+                                style={{ left: `${f.x}%` }}
+                            >
+                                {f.emoji}
+                            </div>
+                        ))}
+                    </div>
+
+                    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[6] flex gap-1 bg-zinc-900/85 border border-zinc-700 rounded-full px-2 py-1 shadow-lg backdrop-blur">
+                        {REACTIONS.map((emoji) => (
+                            <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => handleReaction(emoji)}
+                                className="text-xl hover:scale-125 transition-transform px-1"
+                            >
+                                {emoji}
+                            </button>
+                        ))}
                     </div>
 
                     {showSettings && (
@@ -231,16 +381,21 @@ const WatchRoom: React.FC = () => {
                                     <div>
                                         <label className="text-zinc-400 text-sm">Качество</label>
                                         <select
-                                            value={currentQuality}
+                                            value={qualityOptions.includes(currentQuality) ? currentQuality : 'auto'}
                                             onChange={(e) => handleQualityChange(e.target.value)}
                                             className="mt-1 w-full bg-zinc-800 text-white rounded px-3 py-2 text-sm border border-zinc-700"
                                         >
-                                            <option value="auto">Авто</option>
-                                            <option value="1080p">1080p HD</option>
-                                            <option value="720p">720p</option>
-                                            <option value="480p">480p</option>
-                                            <option value="360p">360p</option>
+                                            {qualityOptions.map((opt) => (
+                                                <option key={opt} value={opt}>
+                                                    {opt === 'auto' ? 'Авто' : opt}
+                                                </option>
+                                            ))}
                                         </select>
+                                        {qualityOptions.length <= 1 && (
+                                            <p className="text-xs text-zinc-500 mt-1">
+                                                Множественные качества недоступны для этого источника
+                                            </p>
+                                        )}
                                     </div>
                                     <div>
                                         <label className="text-zinc-400 text-sm">Скорость воспроизведения</label>
@@ -276,7 +431,7 @@ const WatchRoom: React.FC = () => {
                 <div className="flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-3 border-b border-zinc-800 bg-zinc-900/50">
                     <Users className="h-4 w-4 text-zinc-400" />
                     <span className="font-medium text-white">Чат комнаты</span>
-                    <span className="ml-auto text-xs text-zinc-500">ID: {chatId ? chatId.slice(-6) : 'N/A'}</span>
+                    <span className="ml-auto text-xs text-zinc-500 truncate max-w-[50%]">{chatData?.chat?.name || 'Чат'}</span>
                 </div>
 
                 <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-3 py-2 sm:px-4 sm:py-3">
@@ -308,9 +463,13 @@ const WatchRoom: React.FC = () => {
                                         {!isMyMessage && (
                                             <div className="flex items-center gap-2 mb-1">
                                                 <Avatar className="h-5 w-5">
-                                                    <AvatarFallback className="text-[10px] bg-zinc-700">
-                                                        {(msg.username?.[0] || '?').toUpperCase()}
-                                                    </AvatarFallback>
+                                                    {msg.avatar_url ? (
+                                                        <img src={`${staticUrl}${msg.avatar_url}`} alt={msg.username} className="w-full h-full object-cover" />
+                                                    ) : (
+                                                        <AvatarFallback className="text-[10px] bg-zinc-700">
+                                                            {(msg.username?.[0] || '?').toUpperCase()}
+                                                        </AvatarFallback>
+                                                    )}
                                                 </Avatar>
                                                 <span className="text-[11px] text-zinc-500">{msg.username}</span>
                                             </div>
